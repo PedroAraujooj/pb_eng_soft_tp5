@@ -24,6 +24,15 @@ public class SignupLoginPage extends BasePage {
         wait.until(ExpectedConditions.visibilityOfElementLocated(loginTitle));
     }
 
+    public HomePage loginComSucesso(String email, String password) {
+        type(loginEmail, email);
+        type(loginPassword, password);
+        click(loginButton);
+        HomePage home = new HomePage(driver);
+        home.waitUntilLoggedIn();
+        return home;
+    }
+
     public boolean isSignupFormVisible() {
         return $(signupTitle).isDisplayed();
     }

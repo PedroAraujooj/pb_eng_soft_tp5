@@ -1,5 +1,6 @@
 package org.example.banco.selenium.pages;
-
+import org.openqa.selenium.TimeoutException;
+import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.example.banco.selenium.core.BasePage;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
@@ -17,6 +18,9 @@ public class HomePage extends BasePage {
         super(driver);
     }
 
+    public void waitUntilLoggedIn() {
+        wait.until(ExpectedConditions.visibilityOfElementLocated(loggedInAs));
+    }
     public void open() {
         driver.get("https://automationexercise.com/");
         waitForPageReady();
@@ -37,7 +41,12 @@ public class HomePage extends BasePage {
     }
 
     public boolean isLoggedIn() {
-        return !driver.findElements(loggedInAs).isEmpty();
+        try {
+            wait.until(ExpectedConditions.visibilityOfElementLocated(loggedInAs));
+            return true;
+        } catch (TimeoutException e) {
+            return false;
+        }
     }
 
     public void logout() {

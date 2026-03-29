@@ -52,6 +52,8 @@ public abstract class BaseTest {
         options.addArguments("--headless=new");
         options.addArguments("--no-sandbox");
         options.addArguments("--disable-dev-shm-usage");
+        options.addArguments("--lang=pt-BR");
+
 
         return options;
     }
