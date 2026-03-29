@@ -49,6 +49,9 @@ public abstract class BaseTest {
         options.addArguments("--window-size=1280,800");
         options.addArguments("--disable-notifications");
         options.addArguments("--disable-extensions");
+        options.addArguments("--headless=new");
+        options.addArguments("--no-sandbox");
+        options.addArguments("--disable-dev-shm-usage");
 
         return options;
     }
