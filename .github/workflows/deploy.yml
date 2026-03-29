@@ -93,13 +93,33 @@ jobs:
 
       - name: Subir aplicação localmente
         run: |
-          nohup java -jar deployed/test/app.jar > app.log 2>&1 &
+          nohup java -jar target/*.jar > app.log 2>&1 &
           echo $! > app.pid
-          sleep 20
+
+      - name: Aguardar aplicação responder
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:8080/v1/conta > /dev/null; then
+              echo "Aplicação respondeu com sucesso"
+              exit 0
+            fi
+
+            if ! kill -0 "$(cat app.pid)" 2>/dev/null; then
+              echo "Aplicação caiu durante a inicialização"
+              cat app.log
+              exit 1
+            fi
+
+            echo "Aguardando aplicação subir... tentativa $i"
+            sleep 2
+          done
+
+          echo "Timeout aguardando aplicação em localhost:8080"
+          cat app.log
+          exit 1
 
       - name: Smoke test
-        run: |
-          curl -f http://localhost:8080/v1/conta
+        run: curl -fsS http://127.0.0.1:8080/v1/conta
 
       - name: Publicar logs da aplicação
         if: always()
