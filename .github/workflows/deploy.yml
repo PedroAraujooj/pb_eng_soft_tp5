@@ -1,0 +1,246 @@
+name: CD - Deploy Multi Environment
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '21'
+
+jobs:
+  package:
+    name: Package Application
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Build validando o pacote
+        run: mvn -B clean verify
+
+      - name: Publicar artefato para deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployable-jar
+          path: target/*.jar
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy-dev:
+    name: Deploy DEV
+    if: github.ref == 'refs/heads/develop'
+    needs: package
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Baixar artefato
+        uses: actions/download-artifact@v5
+        with:
+          name: deployable-jar
+          path: target
+
+      - name: Credenciais AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy no ambiente DEV
+        run: |
+          VERSION_LABEL=dev-${GITHUB_SHA::8}
+          zip app.zip target/*.jar
+          aws s3 cp app.zip s3://${{ secrets.AWS_S3_BUCKET }}/$VERSION_LABEL.zip
+          aws elasticbeanstalk create-application-version \
+            --application-name "${{ vars.EB_APP_NAME }}" \
+            --version-label "$VERSION_LABEL" \
+            --source-bundle S3Bucket="${{ secrets.AWS_S3_BUCKET }}",S3Key="$VERSION_LABEL.zip"
+          aws elasticbeanstalk update-environment \
+            --environment-name "${{ vars.EB_ENV_NAME }}" \
+            --version-label "$VERSION_LABEL"
+
+      - name: Smoke test DEV
+        run: |
+          curl -f "${{ vars.APP_URL }}/v1/conta"
+
+      - name: Resumo DEV
+        if: always()
+        run: |
+          echo "## Deploy DEV" >> $GITHUB_STEP_SUMMARY
+          echo "- Deploy executado com sucesso em dev" >> $GITHUB_STEP_SUMMARY
+          echo "- Smoke test executado em ${{ vars.APP_URL }}/v1/conta" >> $GITHUB_STEP_SUMMARY
+
+  deploy-test:
+    name: Deploy TEST
+    if: github.ref == 'refs/heads/main' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    needs: package
+    runs-on: ubuntu-latest
+    environment: test
+
+    steps:
+      - name: Baixar artefato
+        uses: actions/download-artifact@v5
+        with:
+          name: deployable-jar
+          path: target
+
+      - name: Credenciais AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy no ambiente TEST
+        run: |
+          VERSION_LABEL=test-${GITHUB_SHA::8}
+          zip app.zip target/*.jar
+          aws s3 cp app.zip s3://${{ secrets.AWS_S3_BUCKET }}/$VERSION_LABEL.zip
+          aws elasticbeanstalk create-application-version \
+            --application-name "${{ vars.EB_APP_NAME }}" \
+            --version-label "$VERSION_LABEL" \
+            --source-bundle S3Bucket="${{ secrets.AWS_S3_BUCKET }}",S3Key="$VERSION_LABEL.zip"
+          aws elasticbeanstalk update-environment \
+            --environment-name "${{ vars.EB_ENV_NAME }}" \
+            --version-label "$VERSION_LABEL"
+
+      - name: Smoke test TEST
+        run: |
+          curl -f "${{ vars.APP_URL }}/v1/conta"
+
+  dast-test:
+    name: DAST com OWASP ZAP
+    needs: deploy-test
+    runs-on: ubuntu-latest
+    environment: test
+
+    steps:
+      - name: Executar ZAP Baseline
+        run: |
+          docker run --rm -t \
+            -v ${{ github.workspace }}:/zap/wrk:rw \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t "${{ vars.APP_URL }}" \
+            -r zap-report.html \
+            -J zap-report.json
+
+      - name: Publicar relatório DAST
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: |
+            zap-report.html
+            zap-report.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Resumo DAST
+        if: always()
+        run: |
+          echo "## DAST" >> $GITHUB_STEP_SUMMARY
+          echo "- OWASP ZAP Baseline executado em ${{ vars.APP_URL }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Relatório publicado como artifact" >> $GITHUB_STEP_SUMMARY
+
+  post-deploy-selenium:
+    name: Testes pós-deploy com Selenium
+    needs: deploy-test
+    runs-on: ubuntu-latest
+    environment: test
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Executar Selenium pós-deploy
+        run: |
+          mvn -B \
+            -DbaseUrl=${{ vars.APP_URL }} \
+            -Dtest='*IT' \
+            failsafe:integration-test failsafe:verify
+
+      - name: Publicar relatórios Selenium
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selenium-post-deploy-reports
+          path: |
+            target/failsafe-reports/**
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Resumo Selenium
+        if: always()
+        run: |
+          echo "## Testes pós-deploy" >> $GITHUB_STEP_SUMMARY
+          echo "- Testes Selenium executados contra ${{ vars.APP_URL }}" >> $GITHUB_STEP_SUMMARY
+
+  deploy-prod:
+    name: Deploy PROD
+    needs: [dast-test, post-deploy-selenium]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - name: Baixar artefato
+        uses: actions/download-artifact@v5
+        with:
+          name: deployable-jar
+          path: target
+
+      - name: Credenciais AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy no ambiente PROD
+        run: |
+          VERSION_LABEL=prod-${GITHUB_SHA::8}
+          zip app.zip target/*.jar
+          aws s3 cp app.zip s3://${{ secrets.AWS_S3_BUCKET }}/$VERSION_LABEL.zip
+          aws elasticbeanstalk create-application-version \
+            --application-name "${{ vars.EB_APP_NAME }}" \
+            --version-label "$VERSION_LABEL" \
+            --source-bundle S3Bucket="${{ secrets.AWS_S3_BUCKET }}",S3Key="$VERSION_LABEL.zip"
+          aws elasticbeanstalk update-environment \
+            --environment-name "${{ vars.EB_ENV_NAME }}" \
+            --version-label "$VERSION_LABEL"
+
+      - name: Smoke test PROD
+        run: |
+          curl -f "${{ vars.APP_URL }}/v1/conta"
+
+      - name: Resumo PROD
+        if: always()
+        run: |
+          echo "## Deploy PROD" >> $GITHUB_STEP_SUMMARY
+          echo "- Deploy executado em produção" >> $GITHUB_STEP_SUMMARY
+          echo "- Aprovação manual controlada pelo Environment 'prod'" >> $GITHUB_STEP_SUMMARY

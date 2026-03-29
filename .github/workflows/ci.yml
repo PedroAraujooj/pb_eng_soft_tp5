@@ -1,0 +1,94 @@
+name: CI - Build, Test and Coverage
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '21'
+
+jobs:
+  build-test:
+    name: Build + Tests + Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Build, testes e cobertura
+        run: |
+          echo "::group::Maven verify"
+          mvn -B clean verify
+          echo "::endgroup::"
+
+      - name: Extrair cobertura do JaCoCo
+        if: always()
+        run: |
+          if [ -f target/site/jacoco/jacoco.csv ]; then
+            COVERAGE=$(awk -F',' 'NR>1 {miss+=$8; cov+=$9} END { if ((miss+cov)>0) printf "%.2f", (cov/(miss+cov))*100; else print "0.00"}' target/site/jacoco/jacoco.csv)
+            echo "COVERAGE=$COVERAGE" >> $GITHUB_ENV
+          else
+            echo "COVERAGE=N/A" >> $GITHUB_ENV
+          fi
+
+      - name: Publicar relatórios de testes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/**
+            target/failsafe-reports/**
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Publicar relatório JaCoCo
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: |
+            target/site/jacoco/**
+            target/jacoco.exec
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Publicar artefato da aplicação
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-jar
+          path: target/*.jar
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Resumo do job
+        if: always()
+        run: |
+          echo "## Resultado da CI" >> $GITHUB_STEP_SUMMARY
+          echo "- Build Maven executado" >> $GITHUB_STEP_SUMMARY
+          echo "- Testes unitários executados" >> $GITHUB_STEP_SUMMARY
+          echo "- Testes de integração executados" >> $GITHUB_STEP_SUMMARY
+          echo "- Cobertura JaCoCo: ${COVERAGE}%" >> $GITHUB_STEP_SUMMARY
+          echo "- Artefatos publicados: JAR, relatórios de testes e JaCoCo" >> $GITHUB_STEP_SUMMARY
