@@ -79,24 +79,17 @@ jobs:
     environment: test
 
     steps:
-      - name: Baixar artefato
-        uses: actions/download-artifact@v5
-        with:
-          name: application-jar
-          path: target
-
       - name: Configurar JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
-          cache: maven
 
-      - name: Deploy simulado TEST
-        run: |
-          mkdir -p deployed/test
-          cp target/*.jar deployed/test/app.jar
-          echo "Deploy TEST simulado com sucesso"
+      - name: Baixar artefato
+        uses: actions/download-artifact@v5
+        with:
+          name: application-jar
+          path: target
 
       - name: Subir aplicação localmente
         run: |
